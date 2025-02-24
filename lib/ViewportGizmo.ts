@@ -13,6 +13,7 @@ import {
   Vector3,
   Vector4,
   WebGLRenderer,
+  EventDispatcher
 } from "three";
 
 import { gizmoDomElement, setDomPlacement } from "./utils/gizmoDomElement";
@@ -30,13 +31,22 @@ import {
 } from "./types";
 import { EPSILON, GIZMO_TURN_RATE } from "./utils/constants";
 import { updateBackground } from "./utils/updateBackground";
-import type { OrbitControls } from "three/examples/jsm/Addons.js";
+import type {
+  OrbitControls, TrackballControls, OrbitControlsEventMap,
+  TrackballControlsEventMap
+} from "three/examples/jsm/Addons.js";
 import { optionsFallback } from "./utils/optionsFallback";
 import { clamp } from "three/src/math/MathUtils.js";
 import { axesObjects } from "./utils/axesObjects";
 import { axisHover } from "./utils/axisHover";
 
 export type { GizmoOptions, ViewportGizmoEventMap, GizmoAxisOptions };
+
+// First, let's create a type that combines both control types' event maps
+type CombinedControlsEventMap = OrbitControlsEventMap & TrackballControlsEventMap;
+
+// Then create a type that represents either control type
+type Controls = OrbitControls | TrackballControls;
 
 const _matrix = /*@__PURE__*/ new Matrix4();
 const _spherical = /*@__PURE__*/ new Spherical();
@@ -56,6 +66,9 @@ const _vec2 = /*@__PURE__*/ new Vector2();
  */
 export class ViewportGizmo extends Object3D<ViewportGizmoEventMap> {
   type = "ViewportGizmo";
+
+  /** Add a property to track which control type we're using */
+  private _isTrackballControls: boolean = false;
 
   /** Whether the gizmo is currently active and responding to user input */
   enabled: boolean = true;
@@ -106,7 +119,7 @@ export class ViewportGizmo extends Object3D<ViewportGizmoEventMap> {
   private _pointerStart = new Vector2();
   private _focus: GizmoAxisObject | null = null;
   private _placement!: GizmoOptionsFallback["placement"];
-  private _controls?: OrbitControls;
+  private _controls?: Controls;
   private _controlsListeners?: {
     start: () => void;
     end: () => void;
@@ -254,6 +267,16 @@ export class ViewportGizmo extends Object3D<ViewportGizmoEventMap> {
 
     const [axes, background, lines] = axesObjects(this._options);
 
+    if (this._isTrackballControls) {
+      /** Adjust axis positions for TrackballControls */
+      axes.forEach(axis => {
+        /** Swap Y and Z positions */
+        const temp = axis.position.y;
+        axis.position.y = axis.position.z;
+        axis.position.z = -temp;  /** Negative to maintain right-hand coordinate system */
+      });
+    }
+
     if (background) this.add(background);
     if (lines) this.add(lines);
     this.add(...axes);
@@ -330,7 +353,7 @@ export class ViewportGizmo extends Object3D<ViewportGizmoEventMap> {
     this._viewport.set(
       domRect.left - containerRect.left,
       renderer.domElement.clientHeight -
-        (domRect.top - containerRect.top + domRect.height),
+      (domRect.top - containerRect.top + domRect.height),
       domRect.width,
       domRect.height
     );
@@ -372,6 +395,9 @@ export class ViewportGizmo extends Object3D<ViewportGizmoEventMap> {
   attachControls(controls: OrbitControls) {
     this.detachControls();
 
+    /** Detect control type */
+    this._isTrackballControls = controls.constructor.name === 'TrackballControls';
+
     this.target = controls.target;
 
     this._controlsListeners = {
@@ -380,9 +406,12 @@ export class ViewportGizmo extends Object3D<ViewportGizmoEventMap> {
       change: () => this.update(false),
     };
 
+    // Use type assertion to handle the event listener
+    const typedControls = controls as EventDispatcher<CombinedControlsEventMap>;
+
     this.addEventListener("start", this._controlsListeners.start);
     this.addEventListener("end", this._controlsListeners.end);
-    controls.addEventListener("change", this._controlsListeners.change);
+    typedControls.addEventListener("change", this._controlsListeners.change);
 
     this._controls = controls;
 
@@ -391,17 +420,16 @@ export class ViewportGizmo extends Object3D<ViewportGizmoEventMap> {
 
   /** Removes all control event listeners and references. Safe to call multiple times. */
   detachControls() {
-    if (!this._controlsListeners || !this._controls) return;
+    if (!this._controlsListeners || !this._controls) return this;
 
     this.target = new Vector3().copy(this._controls.target);
 
     this.removeEventListener("start", this._controlsListeners.start);
     this.removeEventListener("end", this._controlsListeners.end);
 
-    this._controls.removeEventListener(
-      "change",
-      this._controlsListeners.change
-    );
+    // Use type assertion here as well
+    const typedControls = this._controls as EventDispatcher<CombinedControlsEventMap>;
+    typedControls.removeEventListener("change", this._controlsListeners.change);
 
     this._controlsListeners = undefined;
     this._controls = undefined;
@@ -497,21 +525,34 @@ export class ViewportGizmo extends Object3D<ViewportGizmoEventMap> {
     const camera = this.camera;
     const focusPoint = this.target;
 
-    this._targetPosition.copy(position).multiplyScalar(this._distance);
+    // Create a new position vector to avoid modifying the original
+    const adjustedPosition = position.clone();
+
+    if (this._isTrackballControls) {
+      // Swap Y and Z for TrackballControls
+      // This makes Y the up vector instead of Z
+      const temp = adjustedPosition.y;
+      adjustedPosition.y = adjustedPosition.z;
+      adjustedPosition.z = -temp;  // Negative to maintain right-hand coordinate system
+    }
+
+    this._targetPosition.copy(adjustedPosition).multiplyScalar(this._distance);
+
+    const up = this._isTrackballControls ? new Vector3(0, 1, 0) : new Vector3(0, 0, 1);
 
     _matrix
       .setPosition(this._targetPosition)
-      .lookAt(this._targetPosition, this.position, this.up);
+      .lookAt(this._targetPosition, this.position, up);
     this._targetQuaternion.setFromRotationMatrix(_matrix);
 
     this._targetPosition.add(focusPoint);
 
-    _matrix.lookAt(this._targetPosition, focusPoint, this.up);
+    _matrix.lookAt(this._targetPosition, focusPoint, up);
     this._quaternionEnd.setFromRotationMatrix(_matrix);
 
     _matrix
       .setPosition(camera.position)
-      .lookAt(camera.position, focusPoint, this.up);
+      .lookAt(camera.position, focusPoint, up);
     this._quaternionStart.setFromRotationMatrix(_matrix);
 
     this.animating = true;
