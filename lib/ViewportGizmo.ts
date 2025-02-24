@@ -387,12 +387,12 @@ export class ViewportGizmo extends Object3D<ViewportGizmoEventMap> {
   }
 
   /**
-   * Connects OrbitControls with the gizmo, handling interaction states and updates.
+   * Connects OrbitControls/TrackballControls with the gizmo, handling interaction states and updates.
    * Automatically detaches any previously attached controls.
    *
-   * @param controls - The scene's {@link https://threejs.org/docs/#examples/en/controls/OrbitControls OrbitControls}
+   * @param controls - The scene's {@link https://threejs.org/docs/#examples/en/controls/OrbitControls OrbitControls} or {@link https://threejs.org/docs/#examples/en/controls/TrackballControls TrackballControls}
    */
-  attachControls(controls: OrbitControls) {
+  attachControls(controls: Controls) {
     this.detachControls();
 
     /** Detect control type */
